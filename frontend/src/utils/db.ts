@@ -332,27 +332,11 @@ export async function exportSnapshot(): Promise<DatabaseSnapshot> {
   }
 }
 
-function stamp<T>(row: T): T & Revisioned {
-  const now = Date.now()
-  return { ...row, revision: ROW_REVISION, createdAt: now, updatedAt: now }
-}
-
-export async function importSnapshot(snapshot: DatabaseSnapshot): Promise<void> {
-  await db.transaction('rw', [db.scenes, db.elements, db.shootDays, db.records, db.conflicts], async () => {
-    await Promise.all([
-      db.scenes.clear(),
-      db.elements.clear(),
-      db.shootDays.clear(),
-      db.records.clear(),
-      db.conflicts.clear()
-    ])
-    await db.scenes.bulkPut(snapshot.scenes.map(stamp))
-    await db.elements.bulkPut(snapshot.elements.map(stamp))
-    await db.shootDays.bulkPut(snapshot.shootDays.map(stamp))
-    await db.records.bulkPut(snapshot.records.map(stamp))
-    await db.conflicts.bulkPut(snapshot.conflicts.map(stamp))
-  })
-}
+/**
+ * 整库导入的「落地」实现已移至 utils/importFlow.ts：
+ * 先预检（结构版本 / 必填字段 / 跨表引用）、隔离坏行、留存导入前快照，
+ * 再分批写入，失败自动回滚，绝不允许先清空本机再一次性写入。
+ */
 
 /** 清空全部数据并重新灌入演示数据 */
 export async function resetDatabase(): Promise<void> {

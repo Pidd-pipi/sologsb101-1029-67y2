@@ -3,14 +3,23 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download, Upload } from '@element-plus/icons-vue'
+import { Download } from '@element-plus/icons-vue'
 import FilterBar from '@/components/common/FilterBar.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import ConflictTag from '@/components/common/ConflictTag.vue'
-import { db, countAll, exportSnapshot, importSnapshot, resetDatabase, DB_NAME, DB_SCHEMA_VERSION, type ConflictRow } from '@/utils/db'
+import ImportBackupDialog from '@/components/import/ImportBackupDialog.vue'
+import { db, countAll, exportSnapshot, resetDatabase, DB_NAME, DB_SCHEMA_VERSION, type ConflictRow } from '@/utils/db'
+import {
+  TABLE_KEYS,
+  TABLE_LABEL,
+  deleteImportJob,
+  listImportJobs,
+  recoverInterruptedJobs,
+  type ImportJobRow
+} from '@/utils/importFlow'
 import { useIdbTable } from '@/hooks/useIdbTable'
-import { buildReport, downloadJson, parseReport, riskScore, serializeReport, type ContinuityReport } from '@/utils/export'
+import { buildReport, downloadJson, riskScore, serializeReport, type ContinuityReport } from '@/utils/export'
 import type { FilterModel } from '@/types/filter'
 import { filtersToQuery } from '@/utils/query'
 
@@ -22,6 +31,25 @@ const report = ref<ContinuityReport | null>(null)
 const dbCounts = ref<Record<string, number>>({})
 const filters = ref<FilterModel>({ keyword: '' })
 const preview = ref('')
+const importDialogVisible = ref(false)
+const activeJobId = ref<string | null>(null)
+const importJobs = ref<ImportJobRow[]>([])
+
+const JOB_STATUS_LABEL: Record<ImportJobRow['status'], string> = {
+  prechecked: '预检通过待导入',
+  writing: '写入中',
+  succeeded: '已导入（可回滚）',
+  rolled_back: '已回滚（可重试）',
+  failed: '失败待处理'
+}
+
+const JOB_STATUS_TYPE: Record<ImportJobRow['status'], 'info' | 'warning' | 'success' | 'danger' | 'primary'> = {
+  prechecked: 'warning',
+  writing: 'primary',
+  succeeded: 'success',
+  rolled_back: 'info',
+  failed: 'danger'
+}
 
 const totals = computed(() => {
   const open = conflicts.value.filter((item) => item.state === '待确认')
@@ -61,22 +89,34 @@ async function exportLibrary(): Promise<void> {
   ElMessage.success('本地库已导出为 JSON')
 }
 
+function openImportDialog(jobId?: string): void {
+  activeJobId.value = jobId ?? null
+  importDialogVisible.value = true
+}
+
+async function refreshJobs(): Promise<void> {
+  importJobs.value = await listImportJobs()
+}
+
+async function removeJob(jobId: string): Promise<void> {
+  await deleteImportJob(jobId)
+  await refreshJobs()
+}
+
+function jobQuarantineCount(job: ImportJobRow): number {
+  return job.quarantined.length
+}
+
+function jobAcceptedCount(job: ImportJobRow): number {
+  return TABLE_KEYS.reduce((sum, key) => sum + job.acceptedCount[key], 0)
+}
+
+function jobTableSummary(): string {
+  return TABLE_KEYS.map((key) => TABLE_LABEL[key]).join(' / ')
+}
+
 async function importLibrary(): Promise<void> {
-  try {
-    const { value } = await ElMessageBox.prompt('粘贴本地库 JSON 备份内容后确认导入（将覆盖现有数据）', '导入备份', {
-      inputType: 'textarea',
-      confirmButtonText: '确认导入'
-    })
-    const parsed = parseReport(value) as unknown as Awaited<ReturnType<typeof exportSnapshot>>
-    if (!Array.isArray((parsed as unknown as { elements?: unknown[] }).elements)) {
-      throw new Error('缺少 elements 数组字段，不是本应用的备份文件')
-    }
-    await importSnapshot(parsed)
-    await refresh()
-    ElMessage.success('备份已导入')
-  } catch (error) {
-    if (error instanceof Error && error.message) ElMessage.error(`导入失败：${error.message}`)
-  }
+  openImportDialog()
 }
 
 async function resetDemo(): Promise<void> {
@@ -94,8 +134,14 @@ function onFilterChange(next: FilterModel): void {
   filters.value = next
 }
 
-onMounted(() => {
+onMounted(async () => {
   void refresh()
+  // 恢复上次因关闭页面 / 浏览器崩溃而停在写入中途的导入（自动回滚到导入前，保留草稿）
+  const recovered = await recoverInterruptedJobs()
+  await refreshJobs()
+  if (recovered.length > 0) {
+    ElMessage.warning(`检测到 ${recovered.length} 个导入中途退出，已恢复到导入前，可在草稿中重试`)
+  }
   if (typeof route.query.keyword === 'string') filters.value.keyword = route.query.keyword
 })
 
@@ -119,6 +165,45 @@ watch(filters, (value) => {
         <el-button type="primary" :icon="Download" @click="exportReport">导出核对报告</el-button>
       </div>
     </div>
+
+    <!-- 导入草稿：预检通过待导入 / 写入中 / 失败回滚后可重试 / 已导入可回滚 -->
+    <el-card v-if="importJobs.length > 0" shadow="never" class="jobs-card">
+      <template #header>
+        <div class="card-title">
+          <span>备份导入草稿</span>
+          <span class="muted">预检结论与导入前快照都在本机留档，刷新页面也不丢</span>
+        </div>
+      </template>
+      <el-table :data="importJobs" border size="small">
+        <el-table-column prop="fileName" label="备份文件" min-width="180" show-overflow-tooltip />
+        <el-table-column label="结构版本" width="90" align="center">
+          <template #default="{ row }">v{{ row.sourceSchemaVersion }}</template>
+        </el-table-column>
+        <el-table-column label="可写入 / 隔离" width="120" align="center">
+          <template #default="{ row }">
+            {{ jobAcceptedCount(row) }} /
+            <span :class="jobQuarantineCount(row) > 0 ? 'danger-text' : ''">{{ jobQuarantineCount(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="150">
+          <template #default="{ row }">
+            <el-tag :type="JOB_STATUS_TYPE[row.status as ImportJobRow['status']]" size="small">
+              {{ JOB_STATUS_LABEL[row.status as ImportJobRow['status']] }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="lastError" label="最近信息" min-width="200" show-overflow-tooltip />
+        <el-table-column label="操作" width="180" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openImportDialog(row.id)">
+              {{ row.status === 'succeeded' ? '查看 / 回滚' : row.status === 'prechecked' ? '继续导入' : '查看 / 重试' }}
+            </el-button>
+            <el-button link type="danger" @click="removeJob(row.id)">删除草稿</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="muted jobs-hint">分表：{{ jobTableSummary() }}</div>
+    </el-card>
 
     <div class="badge-row">
       <StatBadge label="差异条目" :value="totals.total" suffix="条" icon="Files" tone="primary" />
@@ -190,7 +275,7 @@ watch(filters, (value) => {
             <el-descriptions-item label="导出时间">{{ report?.exportedAt.slice(0, 19).replace('T', ' ') ?? '—' }}</el-descriptions-item>
           </el-descriptions>
           <div class="btn-row">
-            <el-button :icon="Upload" @click="importLibrary">导入备份</el-button>
+            <el-button type="primary" @click="importLibrary">导入备份（预检后分批落地）</el-button>
             <el-button type="danger" plain @click="resetDemo">重置演示数据</el-button>
             <el-button @click="refresh">刷新报告</el-button>
           </div>
@@ -205,6 +290,13 @@ watch(filters, (value) => {
         </el-card>
       </el-col>
     </el-row>
+
+    <ImportBackupDialog
+      v-model="importDialogVisible"
+      :job-id="activeJobId"
+      @imported="refresh"
+      @job-changed="refreshJobs"
+    />
   </div>
 </template>
 
@@ -214,5 +306,15 @@ watch(filters, (value) => {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+.jobs-card {
+  margin: 16px 0;
+}
+.jobs-hint {
+  margin-top: 8px;
+}
+.danger-text {
+  color: var(--el-color-danger);
+  font-weight: 600;
 }
 </style>

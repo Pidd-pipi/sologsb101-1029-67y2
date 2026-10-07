@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --port 22829",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test:import": "esbuild scripts/test-import-flow.mts --bundle --platform=node --format=esm --outfile=scripts/.test-import-flow.mjs --log-level=warning && node scripts/.test-import-flow.mjs; status=$?; rm -f scripts/.test-import-flow.mjs; exit $status"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -21,6 +22,8 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@vitejs/plugin-vue": "^5.2.1",
+    "esbuild": "^0.25.12",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "~5.7.3",
     "vite": "^6.1.0",
     "vue-tsc": "^2.2.0"
