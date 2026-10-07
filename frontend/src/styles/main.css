@@ -1,0 +1,127 @@
+/* 影视场景连戏与道具接续核对台 · 全局样式 */
+:root {
+  --wine-ink: #3b2630;
+  --wine-primary: #2f5d8a;
+  --wine-bg: #faf6f7;
+  --wine-border: #efe3e6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--wine-bg);
+  color: var(--wine-ink);
+  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.page__title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.page__subtitle {
+  margin: 0;
+  color: #7d7278;
+  font-size: 13px;
+}
+
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 600;
+}
+
+.muted {
+  color: #8c8479;
+  font-size: 12px;
+}
+
+.trend-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 120px;
+  padding: 8px 4px;
+  background: #fffdfd;
+  border: 1px solid var(--wine-border);
+  border-radius: 10px;
+}
+
+.trend-bar__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 1 1 0;
+  height: 100%;
+  cursor: default;
+}
+
+.trend-bar__fill {
+  width: 100%;
+  min-height: 4px;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, #5b8bb8, #2f5d8a);
+  transition: height 0.2s ease;
+}
+
+.trend-bar__fill.is-over {
+  background: linear-gradient(180deg, #e08a6b, #c0392b);
+}
+
+.trend-bar__label {
+  font-size: 11px;
+  color: #8c8479;
+  white-space: nowrap;
+}
+
+.drag-row {
+  cursor: grab;
+}
+
+.drag-row.is-dragging {
+  opacity: 0.45;
+}
+
+.drag-handle {
+  cursor: grab;
+  color: #a99ea4;
+}
+
+.el-card {
+  border-radius: 12px;
+}
