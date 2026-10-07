@@ -44,7 +44,7 @@ docker compose up -d --build      # 代码改动后重新构建
 | 构建工具 | Vite 6 | 开发服务器端口 22829 |
 | 状态管理 | Pinia（setup store） | `sceneStore` / `elementStore` / `recordStore` / `conflictStore` |
 | 路由 | Vue Router 4（history 模式） | nginx 侧配合 `try_files` 做 SPA fallback |
-| 本地存储 | Dexie 4（IndexedDB 封装） | 库名 `gbcontinuity-db`，含结构版本号与 upgrade 迁移 |
+| 本地存储 | Dexie 4（IndexedDB 封装） | 库名 `gbcontinuity-db`，结构版本 v2，业务 5 表 + importMeta 留底/草稿表，含 upgrade 迁移 |
 | 容器化 | Docker 多阶段构建：`node:20-alpine` → `nginx:alpine` | 构建阶段执行类型检查与打包，运行阶段仅托管静态产物 |
 
 ---
@@ -103,8 +103,9 @@ sologsb101-1029/
 
 ## 六、数据存储说明
 
-- **IndexedDB 库名**：`gbcontinuity-db`（Dexie 封装），结构版本号 `version(1)`，并带 `upgrade()` 迁移逻辑（为历史行补齐行修订号与时间戳）。
-- **分表存储**：`scenes` 场次、`elements` 连戏要素、`shootDays` 拍摄日、`records` 现场记录、`conflicts` 连戏差异，共 5 张表；每行带 `revision` / `createdAt` / `updatedAt`。
+- **IndexedDB 库名**：`gbcontinuity-db`，结构版本号 `version(2)`（v2 在 v1 基础上新增 `importMeta` 元信息表，业务表不变；旧库打开时走 `upgrade()` 迁移，为历史行补齐行修订号与时间戳）。
+- **分表存储**：`scenes` 场次、`elements` 连戏要素、`shootDays` 拍摄日、`records` 现场记录、`conflicts` 连戏差异 5 张业务表，外加 `importMeta` 键值表（仅存放导入前留底与可重试导入草稿，不参与备份导出）；每行带 `revision` / `createdAt` / `updatedAt`。
+- **备份导入（先预检再落地）**：报告页「导入备份」先读备份的结构版本并逐表核对主键、必填字段、枚举取值与跨表引用（现场记录必须能找到连戏要素/拍摄日/场次，差异必须能找到两条现场记录）；列出每表新增/覆盖条数，找不到引用的坏行**隔离待修、不写库**，可下载隔离清单修复后重新导入。旧结构备份缺修订号/时间戳时按当前结构逐行回填，填不上的标待修。预检时记录本机台账指纹，打开对话框期间每 2.5 秒复核，台账一旦改动预检作废重来。正式写入前先在 `importMeta` 留存整套本机数据（也可另存下载），清空用单事务、写入按每批 100 行分表分事务并显示进度；任一批失败自动用留底恢复到导入前，备份原文与预检结果保留为可重试草稿。
 - **首屏自动播种**：`utils/db.ts` 的 `initDatabase()` 在 `scenes` 表为空时调用 `seedDatabase()`，灌入互相引用的三层演示数据（场次 → 连戏要素 → 拍摄日 → 现场记录 → 差异），其中包含 1 条「阻断 / 待确认」与 1 条「轻微 / 待确认」差异，保证差异页与报告页首次打开就有内容；播种幂等。
 - **差异算法**：`utils/diff.ts` 对状态文本做归一化（去掉空白与标点、颜色/款式同义写法归组，如「藏青 / 深蓝」视为同一色），归一后仍有差异才生成条目；关键要素的状态变化判为「阻断」，一般要素的状态变化判为「需处理」，仅照片说明 / 镜次变化判为「轻微」。
 - **无后端**：没有 API 服务、没有数据库容器；容器本身无状态，不挂载任何卷。

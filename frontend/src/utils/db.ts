@@ -18,10 +18,20 @@ import { seedDatabase } from './seed'
 export const DB_NAME = 'gbcontinuity-db'
 
 /** 当前数据结构版本号（每次调整字段结构必须 +1 并补迁移） */
-export const DB_SCHEMA_VERSION = 1
+export const DB_SCHEMA_VERSION = 2
 
 /** 行结构修订号 */
-export const ROW_REVISION = 1
+export const ROW_REVISION = 2
+
+/** 导入流程用的键值元信息表（导入前留底 / 可重试草稿） */
+export type ImportMetaKey = 'pre-import-snapshot' | 'import-draft'
+
+/** 元信息表：不参与备份导入导出，只存本机导入流程的留底与草稿 */
+export interface ImportMetaRow {
+  key: ImportMetaKey
+  value: unknown
+  updatedAt: number
+}
 
 /** 带时间戳与修订号的持久化实体 */
 export interface Revisioned {
@@ -63,11 +73,12 @@ class GbContinuityDatabase extends Dexie {
   shootDays!: Table<ShootDayRow, string>
   records!: Table<RecordRow, string>
   conflicts!: Table<ConflictRow, string>
+  importMeta!: Table<ImportMetaRow, ImportMetaKey>
 
   constructor() {
     super(DB_NAME)
 
-    this.version(DB_SCHEMA_VERSION)
+    this.version(1)
       .stores({
         scenes: 'id, sceneNo, place, timeOfDay, shootOrder, state, updatedAt',
         elements: 'id, sceneId, category, name, owner, critical, updatedAt',
@@ -76,7 +87,32 @@ class GbContinuityDatabase extends Dexie {
         conflicts: 'id, elementId, recordIdA, recordIdB, severity, state, updatedAt'
       })
       .upgrade(async (tx) => {
-        // 结构迁移：为历史行补齐行修订号与时间戳；新建库时各表为空，迁移天然幂等
+        // v1 建库迁移：为历史行补齐行修订号与时间戳；新建库时各表为空，迁移天然幂等
+        const tableNames = ['scenes', 'elements', 'shootDays', 'records', 'conflicts']
+        for (const name of tableNames) {
+          await tx
+            .table(name)
+            .toCollection()
+            .modify((row: Record<string, unknown>) => {
+              row.revision = 1
+              if (typeof row.createdAt !== 'number') row.createdAt = Date.now()
+              if (typeof row.updatedAt !== 'number') row.updatedAt = row.createdAt
+            })
+        }
+      })
+
+    // v2：新增 importMeta 键值表（导入前留底 / 可重试草稿）；业务表结构不变，
+    // 既有行的行修订号升到当前结构（旧备份导入时的回填逻辑见 utils/importPrecheck.ts）。
+    this.version(2)
+      .stores({
+        scenes: 'id, sceneNo, place, timeOfDay, shootOrder, state, updatedAt',
+        elements: 'id, sceneId, category, name, owner, critical, updatedAt',
+        shootDays: 'id, date, director, scripty, updatedAt',
+        records: 'id, shootDayId, elementId, sceneId, takeNo, updatedAt',
+        conflicts: 'id, elementId, recordIdA, recordIdB, severity, state, updatedAt',
+        importMeta: 'key'
+      })
+      .upgrade(async (tx) => {
         const tableNames = ['scenes', 'elements', 'shootDays', 'records', 'conflicts']
         for (const name of tableNames) {
           await tx
@@ -332,26 +368,37 @@ export async function exportSnapshot(): Promise<DatabaseSnapshot> {
   }
 }
 
-function stamp<T>(row: T): T & Revisioned {
-  const now = Date.now()
-  return { ...row, revision: ROW_REVISION, createdAt: now, updatedAt: now }
+/** 读取五张业务表的完整行（含 revision / 时间戳），供导入前留底与指纹计算 */
+export async function readAllBusinessRows(): Promise<{
+  scenes: SceneRow[]
+  elements: ElementRow[]
+  shootDays: ShootDayRow[]
+  records: RecordRow[]
+  conflicts: ConflictRow[]
+}> {
+  const [scenes, elements, shootDays, records, conflicts] = await Promise.all([
+    db.scenes.toArray(),
+    db.elements.toArray(),
+    db.shootDays.toArray(),
+    db.records.toArray(),
+    db.conflicts.toArray()
+  ])
+  return { scenes, elements, shootDays, records, conflicts }
 }
 
-export async function importSnapshot(snapshot: DatabaseSnapshot): Promise<void> {
-  await db.transaction('rw', [db.scenes, db.elements, db.shootDays, db.records, db.conflicts], async () => {
-    await Promise.all([
-      db.scenes.clear(),
-      db.elements.clear(),
-      db.shootDays.clear(),
-      db.records.clear(),
-      db.conflicts.clear()
-    ])
-    await db.scenes.bulkPut(snapshot.scenes.map(stamp))
-    await db.elements.bulkPut(snapshot.elements.map(stamp))
-    await db.shootDays.bulkPut(snapshot.shootDays.map(stamp))
-    await db.records.bulkPut(snapshot.records.map(stamp))
-    await db.conflicts.bulkPut(snapshot.conflicts.map(stamp))
-  })
+/* --------------------------- 导入元信息表 --------------------------- */
+
+export async function getImportMeta<T>(key: ImportMetaKey): Promise<T | null> {
+  const row = await db.importMeta.get(key)
+  return (row?.value as T | undefined) ?? null
+}
+
+export async function setImportMeta(key: ImportMetaKey, value: unknown): Promise<void> {
+  await db.importMeta.put({ key, value: toPlainRow(value), updatedAt: Date.now() })
+}
+
+export async function deleteImportMeta(key: ImportMetaKey): Promise<void> {
+  await db.importMeta.delete(key)
 }
 
 /** 清空全部数据并重新灌入演示数据 */

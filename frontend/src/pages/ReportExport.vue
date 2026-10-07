@@ -8,14 +8,17 @@ import FilterBar from '@/components/common/FilterBar.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import ConflictTag from '@/components/common/ConflictTag.vue'
-import { db, countAll, exportSnapshot, importSnapshot, resetDatabase, DB_NAME, DB_SCHEMA_VERSION, type ConflictRow } from '@/utils/db'
+import { db, countAll, exportSnapshot, resetDatabase, DB_NAME, DB_SCHEMA_VERSION, type ConflictRow } from '@/utils/db'
 import { useIdbTable } from '@/hooks/useIdbTable'
-import { buildReport, downloadJson, parseReport, riskScore, serializeReport, type ContinuityReport } from '@/utils/export'
+import { buildReport, downloadJson, riskScore, serializeReport, type ContinuityReport } from '@/utils/export'
+import ImportBackupDialog from '@/components/import/ImportBackupDialog.vue'
+import { useImportStore } from '@/stores/importStore'
 import type { FilterModel } from '@/types/filter'
 import { filtersToQuery } from '@/utils/query'
 
 const route = useRoute()
 const router = useRouter()
+const importStore = useImportStore()
 
 const { rows: conflicts } = useIdbTable<ConflictRow>(() => db.conflicts)
 const report = ref<ContinuityReport | null>(null)
@@ -62,21 +65,13 @@ async function exportLibrary(): Promise<void> {
 }
 
 async function importLibrary(): Promise<void> {
-  try {
-    const { value } = await ElMessageBox.prompt('粘贴本地库 JSON 备份内容后确认导入（将覆盖现有数据）', '导入备份', {
-      inputType: 'textarea',
-      confirmButtonText: '确认导入'
-    })
-    const parsed = parseReport(value) as unknown as Awaited<ReturnType<typeof exportSnapshot>>
-    if (!Array.isArray((parsed as unknown as { elements?: unknown[] }).elements)) {
-      throw new Error('缺少 elements 数组字段，不是本应用的备份文件')
-    }
-    await importSnapshot(parsed)
-    await refresh()
-    ElMessage.success('备份已导入')
-  } catch (error) {
-    if (error instanceof Error && error.message) ElMessage.error(`导入失败：${error.message}`)
-  }
+  // 导入全程在对话框内完成：预检 → 隔离待修 → 导入前留底 → 分批写入 → 失败回滚/重试
+  importStore.openDialog()
+}
+
+async function onImportClosed(): Promise<void> {
+  // liveQuery 会自动刷新差异列表，报告小结需手动重算
+  await refresh()
 }
 
 async function resetDemo(): Promise<void> {
@@ -205,6 +200,8 @@ watch(filters, (value) => {
         </el-card>
       </el-col>
     </el-row>
+
+    <ImportBackupDialog @finished="onImportClosed" />
   </div>
 </template>
 
